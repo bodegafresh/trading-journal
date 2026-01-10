@@ -1,10 +1,7 @@
 -- 001_init.sql
--- Tablas base para Trade Journal Pro
--- Ejecuta esto en Supabase SQL Editor.
+-- Tablas base para Trade Journal Pro (Supabase / Postgres)
 
 -- Trades
--- ⚠️ SOLO si todavía no tienes datos y quieres recrear
--- drop table if exists public.trades cascade;
 create table if not exists public.trades (
   id uuid primary key default gen_random_uuid(),
   trade_time timestamptz not null default now(),
@@ -16,15 +13,20 @@ create table if not exists public.trades (
   outcome text not null check (outcome in ('WIN','LOSS','TIE')),
   payout_pct numeric(5,2) not null default 0 check (payout_pct >= 0),
   pnl numeric(12,2) not null default 0,
-  emotion text,
+  emotion text not null,
   notes text,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  constraint trades_emotion_check check (
+    emotion in (
+      'Neutral','Confiado','Enfocado','Ansioso','Impulsivo','Cansado','Frustrado'
+    )
+  )
 );
 
+-- trade_date trigger
 create or replace function public.trades_set_trade_date()
 returns trigger language plpgsql as $$
 begin
-  -- Fecha derivada en UTC (consistente y “no depende del cliente”)
   new.trade_date := (new.trade_time at time zone 'UTC')::date;
   return new;
 end;
@@ -40,8 +42,7 @@ for each row execute function public.trades_set_trade_date();
 create index if not exists idx_trades_trade_date
 on public.trades (trade_date);
 
-
-
+-- Sessions
 create table if not exists public.sessions (
   id uuid primary key default gen_random_uuid(),
   start_time timestamptz not null,
@@ -51,4 +52,5 @@ create table if not exists public.sessions (
   created_at timestamptz not null default now()
 );
 
-create index if not exists idx_sessions_start_time on public.sessions(start_time desc);
+create index if not exists idx_sessions_start_time
+on public.sessions(start_time desc);
