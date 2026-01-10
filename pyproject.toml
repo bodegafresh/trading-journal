@@ -1,0 +1,27 @@
+[tool.poetry]
+name = "trade-journal-pro"
+version = "0.1.0"
+description = "Trading journal con Streamlit + Plotly + Supabase"
+authors = ["Tu Nombre <tu@email.com>"]
+readme = "README.md"
+packages = [{ include = "trade_journal", from = "src" }]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+streamlit = "^1.36.0"
+plotly = "^5.23.0"
+pandas = "^2.2.2"
+pydantic = "^2.7.4"
+python-dotenv = "^1.0.1"
+requests = "^2.32.3"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.1"
+ruff = "^0.5.5"
+
+[tool.ruff]
+line-length = 100
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

@@ -1,113 +1,80 @@
-# Trading Journal
+# Trade Journal Pro (Supabase)
 
-Aplicación para registrar operaciones de trading (trades), gestionar sesiones y visualizar métricas con un dashboard moderno e interactivo.
+App de journal de trading con dashboard moderno (Streamlit + Plotly) y base de datos centralizada en **Supabase (Postgres)**.
 
-> Objetivo: evolucionar un registro simple (CSV + GUI) hacia una app “pro” con base de datos, gráficos bonitos (Plotly) y flujo de trabajo mantenible.
+## Qué incluye este repo (starter)
+- Tablas `trades` y `sessions` en Supabase (SQL en `supabase/migrations/001_init.sql`)
+- App Streamlit multipágina:
+  - **Dashboard** (KPIs + curvas)
+  - **Operaciones** (crear trade + tabla)
+  - **Sesiones** (start/stop + registro)
+  - **Importar** (CSV legacy -> Supabase)
+- Capa de acceso a datos vía PostgREST (HTTP) para que también puedas escribir desde Apps Script / Telegram.
 
----
-
-## Features (MVP)
-
-- Registro de operaciones:
-  - Activo (ej: EUR/USD)
-  - Timeframe
-  - Monto (USD)
-  - Dirección (↑ / ↓)
-  - Resultado (win/loss/tie)
-  - Payout %
-  - Emoción
-  - Notas
-  - Timestamp automático
-- KPIs:
-  - WinRate (día y acumulado)
-  - PnL diario y acumulado
-  - Nº de operaciones (día y acumulado)
-  - Progreso contra objetivo diario (PnL y minutos efectivos)
-- Sesiones:
-  - Cronómetro de sesión (inicio/pausa/finalizar)
-  - Minutos efectivos por día
-- Importación:
-  - Importar histórico desde CSV (compatibilidad con el formato legado)
-- Gráficos interactivos (Plotly):
-  - PnL acumulado en el día
-  - Ops por hora
-  - Win/Loss por activo y timeframe
-  - Distribución por emoción
+> Nota: este starter asume un uso “single-user”. En producción conviene activar RLS y usar auth/roles.
 
 ---
 
-## Tech Stack
+## Requisitos
+- Python 3.11+
 
-- UI: Streamlit
-- Charts: Plotly
-- DB: SQLite
-- Models/Validation: Pydantic
-- ORM: SQLModel (o SQLAlchemy)
-- Packaging: Poetry
+## Configuración de Supabase
+1. Crea el proyecto en Supabase.
+2. En el SQL editor, ejecuta el script:
+   - `supabase/migrations/001_init.sql`
+3. Obtén tus credenciales:
+   - **Project URL**
+   - **anon public key** (o service role si es solo local y privado)
 
----
+Crea un `.env` a partir del ejemplo:
 
-## Estructura del proyecto
+```bash
+cp .env.example .env
+```
 
-- `src/trade_journal/domain`: modelos y reglas de negocio (sin UI)
-- `src/trade_journal/data`: persistencia (SQLite), repositorios e importadores
-- `src/trade_journal/analytics`: KPIs y generación de gráficos
-- `src/trade_journal/app`: aplicación Streamlit (páginas y componentes)
-
-```md
-trade-journal-pro/
-├─ README.md
-├─ pyproject.toml
-├─ .gitignore
-├─ .env.example
-├─ data/
-│ ├─ raw/ # imports: csv originales, backups
-│ └─ app.db # sqlite local (ignorado en git)
-├─ src/
-│ └─ trade_journal/
-│ ├─ **init**.py
-│ ├─ config.py # settings (paths, env, etc.)
-│ ├─ domain/
-│ │ ├─ models.py # Trade, Session, enums (direction/outcome/emotion)
-│ │ └─ rules.py # cálculo pnl, winrate, métricas
-│ ├─ data/
-│ │ ├─ database.py # engine sqlite + session
-│ │ ├─ repositories.py# CRUD + queries
-│ │ └─ importers.py # CSV -> DB
-│ ├─ analytics/
-│ │ ├─ kpis.py # KPIs diarios/acumulados
-│ │ └─ charts.py # funciones Plotly
-│ └─ app/
-│ ├─ main.py # entrypoint Streamlit
-│ ├─ pages/ # multipage dashboard
-│ │ ├─ 1_Dashboard.py
-│ │ ├─ 2_Operaciones.py
-│ │ ├─ 3_Sesiones.py
-│ │ └─ 4_Importar.py
-│ └─ components.py # widgets reutilizables
-├─ tests/
-│ ├─ test_rules.py
-│ ├─ test_kpis.py
-│ └─ test_importers.py
-├─ scripts/
-│ ├─ dev_run.sh
-│ └─ migrate_csv_to_db.py
-└─ .github/
-└─ workflows/
-└─ ci.yml
+Ejemplo:
+```env
+SUPABASE_URL="https://xxxx.supabase.co"
+SUPABASE_KEY="tu_anon_key"
 ```
 
 ---
 
-## Instalación (desarrollo)
-
-### Requisitos
-
-- Python 3.11+ (recomendado)
-
-### Setup con Poetry
+## Instalación
+Con Poetry:
 
 ```bash
 poetry install
 poetry run streamlit run src/trade_journal/app/main.py
 ```
+
+Sin Poetry (pip):
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -r requirements.txt
+streamlit run src/trade_journal/app/main.py
+```
+
+---
+
+## Importar tu CSV legado
+La página **Importar** acepta un CSV con las columnas del script original:
+
+`datetime,date,asset,timeframe,amount,direction,outcome,payout_pct,pnl,emotion,notes`
+
+---
+
+## Estructura
+- `src/trade_journal/data`: cliente Supabase + repositorios
+- `src/trade_journal/domain`: modelos Pydantic y reglas
+- `src/trade_journal/analytics`: KPIs + charts Plotly
+- `src/trade_journal/app`: UI Streamlit (pages)
+
+---
+
+## Próximos pasos sugeridos
+- Activar RLS + policies y dejar el bot con una key limitada
+- Normalizar catálogos (assets/timeframes/emotions)
+- Reportes (PDF/Markdown) y export a Sheets
