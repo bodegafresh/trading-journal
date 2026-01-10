@@ -1,0 +1,19 @@
+# Poetry
+poetry.lock
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Entornos virtuales
+.venv/
+venv/
+
+# Variables de entorno
+.env
+
+# Streamlit
+.streamlit/
+
+# OS
+.DS_Store
