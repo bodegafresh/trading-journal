@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import date, datetime
 from typing import Tuple
 
 import pandas as pd
@@ -13,9 +12,11 @@ from trade_journal.data.repositories import SessionRepository, TradeRepository
 
 LOCAL_TZ = pytz.timezone("America/Santiago")
 
+
 @st.cache_resource
 def get_repos() -> Tuple[TradeRepository, SessionRepository]:
-    load_dotenv()
+    # Carga .env una sola vez por proceso (cache_resource)
+    load_dotenv(override=False)
     sb = load_supabase_from_env()
     return TradeRepository(sb), SessionRepository(sb)
 
@@ -29,13 +30,10 @@ def get_recent_trades(limit: int = 2000) -> pd.DataFrame:
     if df.empty:
         return df
 
-    # ✅ tolera ISO con/sin microsegundos, con/sin Z
     if "trade_time" in df.columns:
         dt = pd.to_datetime(df["trade_time"], utc=True, errors="coerce", format="mixed")
-        # lo muestro en hora local pero sin tz (más cómodo en tablas)
         df["trade_time"] = dt.dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
 
-    # trade_date si existe
     if "trade_date" in df.columns:
         df["trade_date"] = pd.to_datetime(df["trade_date"], errors="coerce").dt.date
 
@@ -45,11 +43,24 @@ def get_recent_trades(limit: int = 2000) -> pd.DataFrame:
 @st.cache_data(ttl=15)
 def get_recent_sessions(limit: int = 500) -> pd.DataFrame:
     _, session_repo = get_repos()
-    rows = session_repo.list_recent(limit=limit)
+    rows = session_repo.list_recent(limit=limit) or []
     df = pd.DataFrame(rows)
-    if not df.empty:
-        df["start_time"] = pd.to_datetime(df["start_time"], utc=True).dt.tz_convert(None)
-        if "end_time" in df.columns:
-            df["end_time"] = pd.to_datetime(df["end_time"], utc=True, errors="coerce").dt.tz_convert(None)
-    return df
 
+    if df.empty:
+        return df
+
+    if "start_time" in df.columns:
+        df["start_time"] = (
+            pd.to_datetime(df["start_time"], utc=True, errors="coerce", format="mixed")
+            .dt.tz_convert(LOCAL_TZ)
+            .dt.tz_localize(None)
+        )
+
+    if "end_time" in df.columns:
+        df["end_time"] = (
+            pd.to_datetime(df["end_time"], utc=True, errors="coerce", format="mixed")
+            .dt.tz_convert(LOCAL_TZ)
+            .dt.tz_localize(None)
+        )
+
+    return df

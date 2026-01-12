@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+import uuid
 
 import streamlit as st
+import requests
 
 from trade_journal.app.utils import get_repos, get_recent_trades
-from trade_journal.domain.models import Direction, Outcome, TradeCreate
+from trade_journal.domain.models import Direction, Outcome
 
 st.set_page_config(page_title="Operaciones", page_icon="🧾", layout="wide")
 st.title("🧾 Operaciones")
@@ -14,13 +16,21 @@ st.title("🧾 Operaciones")
 LOCAL_TZ = ZoneInfo("America/Santiago")
 
 ASSETS = [
-    "EUR/USD", "GBP/USD", "USD/JPY", "USD/CAD", "EUR/JPY", "EUR/GBP", "BTC/USD",
-    "Asia comoposites", "Euro composites", "Compound Index",
+    "EUR/USD",
+    "GBP/USD",
+    "USD/JPY",
+    "USD/CAD",
+    "EUR/JPY",
+    "EUR/GBP",
+    "BTC/USD",
+    "Asia comoposites",
+    "Euro composites",
+    "Compound Index",
 ]
 TIMEFRAMES = ["1m", "5m"]
 EMOTIONS = ["Neutral", "Confiado", "Enfocado", "Ansioso", "Impulsivo", "Cansado", "Frustrado"]
 
-# Segmentación (según tu BD nueva)
+# Segmentación (según tu BD)
 SETUPS = ["", "Breakout", "Reversal", "Trend", "Range", "News"]  # "" -> None
 MARKET_REGIMES = ["", "Trend", "Range", "Volatile", "LowVol"]   # "" -> None
 QUALITY_GRADES = ["", "A", "B", "C", "D"]                       # "" -> None
@@ -50,7 +60,6 @@ def _parse_dt(dt_val) -> datetime | None:
             return dt_val.replace(tzinfo=timezone.utc)
         return dt_val
     try:
-        # strings tipo ISO "2025-10-05T10:00:00+00:00"
         return datetime.fromisoformat(str(dt_val).replace("Z", "+00:00"))
     except Exception:
         return None
@@ -70,11 +79,8 @@ def get_open_session(session_repo) -> tuple[str | None, str]:
       - debe existir EXACTAMENTE 1 sesión abierta (end_time is null)
       - esa sesión debe corresponder al día local actual (America/Santiago)
     """
-    # Traer sesiones recientes y filtrar abiertas.
-    # Si tu repo tiene un método específico para abiertas, lo usamos.
-    rows = None
     if hasattr(session_repo, "list_open"):
-        rows = session_repo.list_open()  # ideal si existe
+        rows = session_repo.list_open()
     else:
         rows = session_repo.list_recent(limit=50)
 
@@ -84,7 +90,6 @@ def get_open_session(session_repo) -> tuple[str | None, str]:
     if len(open_rows) == 0:
         return None, "No hay sesión abierta (debes iniciar desde Telegram)."
 
-    # Si hay más de una abierta: estado inválido (y hay que arreglarlo desde bot/BD)
     if len(open_rows) > 1:
         return None, f"⚠️ Hay {len(open_rows)} sesiones abiertas. Debe existir solo 1. Cierra desde el bot."
 
@@ -97,8 +102,6 @@ def get_open_session(session_repo) -> tuple[str | None, str]:
     sess_date_local = _session_local_date(open_sess)
 
     if sess_date_local != today_local:
-        # Según tus reglas: si pasó medianoche, debería auto-cerrarse.
-        # Aún no implementamos el auto-close, así que en la app lo tratamos como inválido.
         return None, (
             f"Hay una sesión abierta pero es de otro día (sesión: {sess_date_local}, hoy: {today_local}). "
             "Debe cerrarse automáticamente o vía bot."
@@ -106,6 +109,38 @@ def get_open_session(session_repo) -> tuple[str | None, str]:
 
     start_time = open_sess.get("start_time") or "?"
     return str(sid), f"Sesión abierta ✅ (start: {start_time} | día local: {sess_date_local})"
+
+
+def _normalize_insert_result(result):
+    """
+    Supabase/PostgREST a veces devuelve:
+      - dict
+      - list[dict]
+    Normalizamos a dict.
+    """
+    if isinstance(result, dict):
+        return result
+    if isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict):
+        return result[0]
+    return {}  # fallback
+
+
+def _safe_repo_insert_trade(trade_repo, payload: dict):
+    """
+    Inserta trade de forma robusta.
+    Preferimos enviar un dict con nombres EXACTOS de columnas de la BD
+    para evitar que TradeCreate/serialización "pierda" session_id.
+    """
+    # 1) Si el repo soporta insertar dict directo
+    if hasattr(trade_repo, "create_dict"):
+        return trade_repo.create_dict(payload)
+
+    # 2) Si expone cliente supabase interno
+    if hasattr(trade_repo, "sb") and hasattr(trade_repo.sb, "insert"):
+        return trade_repo.sb.insert("trades", payload)
+
+    # 3) Último recurso: create() con dict (muchos repos lo aceptan)
+    return trade_repo.create(payload)
 
 
 trade_repo, session_repo = get_repos()
@@ -138,7 +173,7 @@ with st.form("new_trade", clear_on_submit=True):
 
     with c4:
         emotion = st.selectbox("Emoción", options=EMOTIONS, index=0, key="emotion")
-        checklist_passed = st.checkbox("Checklist PASS", value=True, key="checklist_passed")
+        checklist_pass = st.checkbox("Checklist PASS", value=True, key="checklist_pass")  # ✅ columna BD
 
     st.markdown("### 🧩 Contexto / Calidad (opcional)")
     s1, s2, s3 = st.columns([1.2, 1.2, 0.8])
@@ -154,46 +189,69 @@ with st.form("new_trade", clear_on_submit=True):
 
     notes = st.text_area("Notas (opcional)", height=90, key="notes")
 
-    # IMPORTANTE: si no hay sesión abierta válida, deshabilitamos el botón
     submitted = st.form_submit_button("Guardar trade", disabled=(open_session_id is None))
 
 # ---------------------------------------------------------
-# Guardado (enforce session)
+# Guardado (ENFORCE session)
 # ---------------------------------------------------------
 if submitted:
     if open_session_id is None:
         st.error("No se puede guardar: no hay una sesión abierta válida para hoy (America/Santiago).")
     else:
         try:
+            uuid.UUID(str(open_session_id))  # valida UUID real
+
             pnl = calculate_pnl(float(amount), float(payout), str(outcome))
 
-            trade = TradeCreate(
-                trade_time=datetime.now(timezone.utc),
+            payload = {
+                "trade_time": datetime.now(timezone.utc).isoformat(),
+                "asset": str(asset).strip(),
+                "timeframe": str(timeframe).strip(),
+                "amount": float(amount),
+                "direction": Direction(direction).value,
+                "outcome": Outcome(outcome).value,
+                "payout_pct": float(payout),
+                "pnl": float(pnl),
+                "emotion": str(emotion).strip(),
+                "notes": empty_to_none(notes),
 
-                asset=str(asset).strip(),
-                timeframe=str(timeframe).strip(),
-                amount=float(amount),
-                direction=Direction(direction),
-                outcome=Outcome(outcome),
-                payout_pct=float(payout),
-                pnl=float(pnl),
-                emotion=str(emotion).strip(),
-                notes=empty_to_none(notes),
+                "setup_tag": empty_to_none(setup_tag),
+                "market_regime": empty_to_none(market_regime),
+                "quality_grade": empty_to_none(quality_grade),
+                "checklist_pass": bool(checklist_pass),
+                "screenshot_url": empty_to_none(screenshot_url),
 
-                # Nuevos campos
-                setup_tag=empty_to_none(setup_tag),
-                market_regime=empty_to_none(market_regime),
-                quality_grade=empty_to_none(quality_grade),
-                checklist_passed=bool(checklist_passed),
-                session_id=str(open_session_id),  # ✅ forzado a la sesión abierta
-                screenshot_url=empty_to_none(screenshot_url),
-            )
+                # ✅ CRÍTICO
+                "session_id": str(open_session_id),
+            }
 
-            inserted = trade_repo.create(trade)
-            st.success(f"Trade guardado ✅ id={inserted.get('id')} | PnL={pnl:.2f} USD | session_id={open_session_id}")
+            result = _safe_repo_insert_trade(trade_repo, payload)
+            inserted = _normalize_insert_result(result)
+
+            trade_id = inserted.get("id", "—")
+            st.success(f"Trade guardado ✅ id={trade_id} | PnL={pnl:.2f} USD | session_id={open_session_id}")
             st.cache_data.clear()
+
+        except requests.HTTPError as e:
+            detail = ""
+            if e.response is not None:
+                try:
+                    detail = e.response.text
+                except Exception:
+                    detail = str(e)
+            st.error(f"No se pudo guardar (HTTP): {detail}")
+
         except Exception as e:
-            st.error(f"No se pudo guardar: {e}")
+            detail = ""
+            resp = getattr(e, "response", None)
+            if resp is not None:
+                try:
+                    detail = resp.text
+                except Exception:
+                    detail = str(e)
+            else:
+                detail = str(e)
+            st.error(f"No se pudo guardar: {detail}")
 
 st.divider()
 st.subheader("Trades recientes")
