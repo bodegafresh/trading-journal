@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+import os
 import uuid
 
 import streamlit as st
@@ -9,6 +10,7 @@ import requests
 
 from trade_journal.app.utils import get_repos, get_recent_trades
 from trade_journal.domain.models import Direction, Outcome
+from trade_journal.infra.storage import GitHubPagesStorage
 
 st.set_page_config(page_title="Operaciones", page_icon="🧾", layout="wide")
 st.title("🧾 Operaciones")
@@ -34,6 +36,29 @@ EMOTIONS = ["Neutral", "Confiado", "Enfocado", "Ansioso", "Impulsivo", "Cansado"
 SETUPS = ["", "Breakout", "Reversal", "Trend", "Range", "News"]  # "" -> None
 MARKET_REGIMES = ["", "Trend", "Range", "Volatile", "LowVol"]   # "" -> None
 QUALITY_GRADES = ["", "A", "B", "C", "D"]                       # "" -> None
+
+
+# ---------------------------------------------------------
+# Storage (GitHub Pages) - escalable (puedes cambiar proveedor luego)
+# ---------------------------------------------------------
+def _build_evidence_storage() -> GitHubPagesStorage | None:
+    token = os.getenv("GITHUB_TOKEN")
+    owner = os.getenv("GITHUB_OWNER")
+    repo = os.getenv("GITHUB_REPO")
+    pages_base = os.getenv("GITHUB_PAGES_BASE")
+
+    if not token or not owner or not repo or not pages_base:
+        return None
+
+    return GitHubPagesStorage(
+        owner=owner,
+        repo=repo,
+        token=token,
+        pages_base_url=pages_base,
+    )
+
+
+EVIDENCE_STORAGE = _build_evidence_storage()
 
 
 def calculate_pnl(amount: float, payout_pct: float, outcome: str) -> float:
@@ -154,6 +179,68 @@ else:
     st.error(session_status)
 
 # ---------------------------------------------------------
+# Evidencia (FUERA del form) => evita que quede "pendiente" hasta submit
+# ---------------------------------------------------------
+st.markdown("### 🗂️ Evidencia (opcional)")
+
+with st.container():
+    if EVIDENCE_STORAGE is None:
+        st.info(
+            "Subida rápida deshabilitada: configura tu .env con "
+            "GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO, GITHUB_PAGES_BASE."
+        )
+        uploaded_evidence = None
+    else:
+        uploaded_evidence = st.file_uploader(
+            "Subir screenshot (png/jpg/webp)",
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=False,
+            key="evidence_file",
+        )
+
+    overwrite_evidence = st.checkbox(
+        "Reemplazar imagen si ya existe (corregir)",
+        value=False,
+        key="overwrite_evidence",
+    )
+
+    if uploaded_evidence is not None:
+        st.image(uploaded_evidence, caption="Preview evidencia", use_column_width=True)
+
+    can_upload = bool(EVIDENCE_STORAGE is not None and uploaded_evidence is not None)
+
+    c_up1, c_up2 = st.columns([1, 3])
+    with c_up1:
+        if st.button("⬆️ Subir evidencia", disabled=not can_upload):
+            try:
+                trade_date_local = datetime.now(LOCAL_TZ).date()
+
+                path = EVIDENCE_STORAGE.build_path(
+                    trade_date=trade_date_local,
+                    asset=st.session_state.get("asset", ASSETS[0]),
+                    filename=uploaded_evidence.name,
+                )
+
+                url = EVIDENCE_STORAGE.upload(
+                    path=path,
+                    content=uploaded_evidence.getvalue(),
+                    overwrite=bool(overwrite_evidence),
+                )
+
+                st.session_state["screenshot_url"] = url
+                st.success("Evidencia subida ✅")
+                st.code(url, language="text")
+
+            except Exception as e:
+                st.error(f"No se pudo subir evidencia: {e}")
+
+    with c_up2:
+        st.caption(
+            "Tip: sube la evidencia primero y luego guarda el trade. "
+            "El campo 'Screenshot/Link evidencia' se llenará automáticamente."
+        )
+
+# ---------------------------------------------------------
 # Formulario
 # ---------------------------------------------------------
 with st.form("new_trade", clear_on_submit=True):
@@ -184,8 +271,12 @@ with st.form("new_trade", clear_on_submit=True):
     with s3:
         quality_grade = st.selectbox("Calidad", options=QUALITY_GRADES, index=0, key="quality_grade")
 
-    st.markdown("### 🗂️ Evidencia (opcional)")
-    screenshot_url = st.text_input("Screenshot/Link evidencia", value="", key="screenshot_url")
+    # Campo final que se guarda a la BD
+    screenshot_url = st.text_input(
+        "Screenshot/Link evidencia",
+        value=st.session_state.get("screenshot_url", ""),
+        key="screenshot_url",
+    )
 
     notes = st.text_area("Notas (opcional)", height=90, key="notes")
 
@@ -219,7 +310,7 @@ if submitted:
                 "market_regime": empty_to_none(market_regime),
                 "quality_grade": empty_to_none(quality_grade),
                 "checklist_pass": bool(checklist_pass),
-                "screenshot_url": empty_to_none(screenshot_url),
+                "screenshot_url": empty_to_none(st.session_state.get("screenshot_url", screenshot_url)),
 
                 # ✅ CRÍTICO
                 "session_id": str(open_session_id),
