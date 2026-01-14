@@ -206,18 +206,21 @@ with tabs[0]:
     # ----------------------------
     # IA review
     # ----------------------------
-    max_imgs = st.slider("Máx pérdidas con imagen a auditar", 1, 10, 5)
+    max_imgs = st.slider("Máx operaciones con imagen a auditar", 1, 30, 15)
+    prioritize = st.checkbox("Priorizar pérdidas en el análisis", value=True,
+                            help="Si está activado, analiza primero las pérdidas, luego ganancias y empates")
     run = st.button("🧠 Analizar sesión con IA", type="primary", use_container_width=True)
 
-    cache_key = f"review_ai::{session_id}::{max_imgs}"
+    cache_key = f"review_ai::{session_id}::{max_imgs}::{prioritize}"
     if run:
         with st.spinner("Analizando con IA..."):
             payload = build_session_payload(
                 session_meta=session,
                 trades=trades,
-                max_losses_with_images=int(max_imgs),
+                max_trades_with_images=int(max_imgs),
+                prioritize_losses=prioritize,
             )
-            review = analyze_session_with_vision(session_payload=payload, max_output_tokens=1700)
+            review = analyze_session_with_vision(session_payload=payload, max_output_tokens=2500)
             st.session_state[cache_key] = {"payload": payload, "review": review}
 
     cached = st.session_state.get(cache_key)
@@ -247,6 +250,19 @@ with tabs[0]:
             for b in breaks:
                 st.write(f"- {b}")
 
+        # Análisis por tipo de outcome
+        st.divider()
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown("**📉 Análisis de Pérdidas:**")
+            st.write(cf.get("loss_analysis", "—"))
+        with col2:
+            st.markdown("**📈 Análisis de Ganancias:**")
+            st.write(cf.get("win_analysis", "—"))
+        with col3:
+            st.markdown("**➡️ Análisis de Empates:**")
+            st.write(cf.get("tie_analysis", "—"))
+
         st.subheader("🧱 Reglas accionables")
         rules = review.get("action_rules") or []
         if rules:
@@ -256,35 +272,94 @@ with tabs[0]:
             st.write("—")
 
         # ----------------------------
-        # Auditoría por LOSS con evidencia
+        # Auditoría por trade con evidencia (todas las operaciones)
         # ----------------------------
         st.divider()
-        st.subheader("🧨 Auditoría por LOSS con evidencia (A+ válido vs falso + loss_type)")
+        st.subheader("🧨 Auditoría por operación con evidencia")
 
-        ltr = review.get("loss_trade_reviews") or []
-        if not ltr:
-            st.info("No hubo pérdidas con imagen (o no se incluyeron por límite/URL no imagen).")
+        # Usar trade_reviews (nuevo) o loss_trade_reviews (compatibilidad)
+        all_reviews = review.get("trade_reviews") or review.get("loss_trade_reviews") or []
+
+        if not all_reviews:
+            st.info("No hubo operaciones con imagen (o no se incluyeron por límite/URL no imagen).")
         else:
-            good = sum(1 for x in ltr if x.get("loss_type") == "good_loss")
-            bad = sum(1 for x in ltr if x.get("loss_type") == "bad_loss")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("good_loss (A+ válido que perdió)", good)
-            c2.metric("bad_loss (error de ejecución)", bad)
-            denom = max(1, good + bad)
-            c3.metric("% pérdidas NO A+ (en pérdidas con imagen)", f"{(bad/denom)*100:.1f}%")
+            # Estadísticas generales
+            good_losses = sum(1 for x in all_reviews if x.get("trade_type") == "good_loss")
+            bad_losses = sum(1 for x in all_reviews if x.get("trade_type") == "bad_loss")
+            good_wins = sum(1 for x in all_reviews if x.get("trade_type") == "good_win")
+            lucky_wins = sum(1 for x in all_reviews if x.get("trade_type") == "lucky_win")
+            ties = sum(1 for x in all_reviews if x.get("trade_type") == "neutral_tie")
+
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("✅ Good Loss", good_losses, help="Pérdidas válidas (setup A+ correcto)")
+            c2.metric("❌ Bad Loss", bad_losses, help="Pérdidas por error de ejecución")
+            c3.metric("💚 Good Win", good_wins, help="Ganancias válidas y replicables")
+            c4.metric("🍀 Lucky Win", lucky_wins, help="Ganancias por suerte (no replicable)")
+            c5.metric("➡️ Ties", ties, help="Empates")
+
+            # Métricas derivadas
+            total_losses = good_losses + bad_losses
+            total_wins = good_wins + lucky_wins
+
+            if total_losses > 0:
+                bad_loss_pct = (bad_losses / total_losses) * 100
+                st.warning(f"⚠️ {bad_loss_pct:.1f}% de las pérdidas fueron errores evitables (bad_loss)")
+
+            if total_wins > 0:
+                lucky_win_pct = (lucky_wins / total_wins) * 100
+                if lucky_win_pct > 30:
+                    st.warning(f"⚠️ {lucky_win_pct:.1f}% de las ganancias fueron por suerte (no replicables)")
+                else:
+                    st.success(f"✅ {100 - lucky_win_pct:.1f}% de las ganancias fueron por ejecución correcta")
+
+            st.divider()
+
+            # Filtros para visualización
+            filter_outcome = st.multiselect(
+                "Filtrar por resultado:",
+                options=["LOSS", "WIN", "TIE"],
+                default=["LOSS", "WIN", "TIE"]
+            )
+
+            filter_type = st.multiselect(
+                "Filtrar por tipo:",
+                options=["good_loss", "bad_loss", "good_win", "lucky_win", "neutral_tie"],
+                default=["good_loss", "bad_loss", "good_win", "lucky_win", "neutral_tie"]
+            )
 
             by_id = {str(t.id): t for t in trades}
-            for item in ltr:
+
+            for item in all_reviews:
+                outcome = str(item.get("outcome", "UNKNOWN")).upper()
+                trade_type = item.get("trade_type", "unknown")
+
+                # Aplicar filtros
+                if outcome not in filter_outcome or trade_type not in filter_type:
+                    continue
+
                 tid = str(item.get("trade_id", "—"))
                 score = item.get("ai_score_a_plus_0_5", "—")
                 is_a = bool(item.get("ai_is_a_plus", False))
                 valid = bool(item.get("ai_validity", False))
-                lt = item.get("loss_type", "—")
                 conf = item.get("confidence_0_1", "—")
 
+                # Emoji según el tipo
+                emoji_map = {
+                    "good_loss": "✅",
+                    "bad_loss": "❌",
+                    "good_win": "💚",
+                    "lucky_win": "🍀",
+                    "neutral_tie": "➡️"
+                }
+                emoji = emoji_map.get(trade_type, "❓")
+
                 t = by_id.get(tid)
-                title = f"LOSS trade={tid} | score={score}/5 | A+={is_a} | validity={valid} | loss_type={lt} | conf={conf}"
-                with st.expander(title, expanded=False):
+                title = f"{emoji} {outcome} | trade={tid} | score={score}/5 | A+={is_a} | validity={valid} | type={trade_type} | conf={conf}"
+
+                # Expandir por defecto solo las bad_loss y lucky_win
+                expand_default = trade_type in ["bad_loss", "lucky_win"]
+
+                with st.expander(title, expanded=expand_default):
                     if t and t.screenshot_url and _is_image_url(t.screenshot_url):
                         st.image(t.screenshot_url, caption=f"trade_id={tid}", use_container_width=True)
 
@@ -301,7 +376,19 @@ with tabs[0]:
                             st.write(f"- {rr}")
 
                     st.markdown(f"**Causa primaria:** {item.get('primary_cause','—')}")
-                    st.markdown(f"**Corrección (1 acción concreta):** {item.get('one_fix','—')}")
+
+                    # Mostrar campos específicos según el tipo
+                    if trade_type in ["good_loss", "bad_loss"]:
+                        st.markdown(f"**🔧 Qué resolver:** {item.get('what_to_fix', item.get('one_fix', '—'))}")
+                        st.markdown(f"**📈 Qué mejorar:** {item.get('what_to_improve','—')}")
+                        st.markdown(f"**💡 Lección clave:** {item.get('key_lesson','—')}")
+                        st.markdown(f"**🔄 ¿Era evitable?:** {item.get('replicability','—')}")
+                    elif trade_type in ["good_win", "lucky_win"]:
+                        st.markdown(f"**🔄 ¿Es replicable?:** {item.get('replicability','—')}")
+                        st.markdown(f"**💡 Lección clave:** {item.get('key_lesson','—')}")
+                    else:  # neutral_tie
+                        st.markdown(f"**📈 Qué mejorar:** {item.get('what_to_improve','—')}")
+                        st.markdown(f"**💡 Lección clave:** {item.get('key_lesson','—')}")
 
         # ----------------------------
         # Tabla trades sesión

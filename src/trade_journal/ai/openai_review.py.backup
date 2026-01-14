@@ -54,12 +54,10 @@ REGLAS DURAS (no negociables):
 - Si `context` = fail OR `no_entry_filters` = fail => `ai_validity` DEBE ser false.
 - “A+ real” es estricto:
   - `ai_is_a_plus` = true SOLO si ai_score_a_plus_0_5 == 5 Y ai_validity == true.
-- trade_type (clasificación por outcome y validez):
-  - Si outcome == LOSS y ai_validity == true => good_loss (pérdida válida, setup correcto)
-  - Si outcome == LOSS y ai_validity == false => bad_loss (error de ejecución)
-  - Si outcome == WIN y ai_validity == true => good_win (ganancia válida, replicable)
-  - Si outcome == WIN y ai_validity == false => lucky_win (ganancia por suerte, no replicable)
-  - Si outcome == TIE => neutral_tie
+- loss_type:
+  - Si outcome == LOSS y ai_validity == true => good_loss
+  - Si outcome == LOSS y ai_validity == false => bad_loss
+  - Si no => neutral
 - Prohibido afirmar “pasó checklist” si ai_validity=false.
 - Nada de consejos genéricos: cada corrección debe ser una acción concreta aplicable en el próximo trade.
 
@@ -68,38 +66,31 @@ Recibirás JSON con:
 - session_meta
 - kpis
 - trades_sample
-- trades_with_images (TODAS las operaciones con imagen: WIN, LOSS, TIE)
+- losses_with_images (cada item incluye screenshot_url público)
 
 Tu tarea:
 1) Entregar resumen de sesión SIN contradicciones, basado en datos.
-2) Auditar CADA operación con evidencia (imagen) y llenar checklist por bloques.
-3) Para operaciones con fallas: listar failed_blocks y failed_rules (reglas específicas dentro de cada bloque).
-4) PROFUNDIZAR en las PÉRDIDAS: analizar qué salió mal, qué resolver, qué mejorar.
-5) Analizar GANANCIAS: identificar si fueron por ejecución correcta (replicable) o suerte.
-6) Analizar EMPATES: qué pudo haberse mejorado en la ejecución.
-7) Producir reglas accionables de la sesión (máx 5, concretas), priorizando lo que previene pérdidas y maximiza ganancias replicables.
+2) Auditar cada LOSS con evidencia (imagen) y llenar checklist por bloques.
+3) Para cada LOSS: listar failed_blocks y failed_rules (reglas específicas dentro de cada bloque).
+4) Producir reglas accionables de la sesión (máx 5, concretas).
 
 FORMATO DE SALIDA:
 Devuelve SOLO JSON válido con esta estructura:
 
 {
-  "session_summary_md": "markdown breve (máx ~30 líneas) con resumen de sesión, patrones en pérdidas, ganancias y empates",
+  "session_summary_md": "markdown breve (máx ~20 líneas)",
   "checklist_findings": {
-    "pass_vs_fail_interpretation": "texto corto sobre adherencia al protocolo",
-    "most_common_breaks": ["...", "..."],
-    "win_analysis": "patrón común en las ganancias (¿setup correcto o suerte?)",
-    "loss_analysis": "patrón común en las pérdidas (¿qué falló más?)",
-    "tie_analysis": "patrón en empates si existen"
+    "pass_vs_fail_interpretation": "texto corto",
+    "most_common_breaks": ["...", "..."]
   },
   "action_rules": ["...", "...", "...", "...", "..."],
-  "trade_reviews": [
+  "loss_trade_reviews": [
     {
       "trade_id": "uuid",
-      "outcome": "WIN|LOSS|TIE",
       "ai_score_a_plus_0_5": 0,
       "ai_validity": true,
       "ai_is_a_plus": false,
-      "trade_type": "good_loss|bad_loss|good_win|lucky_win|neutral_tie",
+      "loss_type": "good_loss|bad_loss|neutral",
       "checklist": {
         "context": "pass|fail|unclear",
         "ema21": "pass|fail|unclear",
@@ -109,19 +100,12 @@ Devuelve SOLO JSON válido con esta estructura:
       },
       "failed_blocks": ["context", "entry_candle"],
       "failed_rules": ["Bollinger comprimida", "Entrada tardía (persecución)"],
-      "primary_cause": "frase corta sobre la causa raíz",
-      "what_to_fix": "qué resolver específicamente",
-      "what_to_improve": "qué mejorar en la ejecución",
-      "key_lesson": "lección clave de esta operación (especialmente importante en pérdidas)",
-      "replicability": "si WIN: ¿es replicable este resultado? / si LOSS: ¿era evitable?",
+      "primary_cause": "frase corta",
+      "one_fix": "1 acción concreta para el próximo trade",
       "confidence_0_1": 0.0
     }
   ]
 }
-
-NOTA IMPORTANTE: Para PÉRDIDAS, profundiza más en 'what_to_fix', 'what_to_improve' y 'key_lesson'.
-Para GANANCIAS, enfócate en 'replicability' y si el setup fue genuinamente A+.
-Para EMPATES, indica qué pudo haberse ejecutado mejor para convertirlo en ganancia.
 """
 
 
@@ -234,29 +218,16 @@ def build_session_payload(
     *,
     session_meta: Dict[str, Any],
     trades: List[TradeLite],
-    max_trades_with_images: int = 20,
-    prioritize_losses: bool = True,
+    max_losses_with_images: int = 10,
 ) -> Dict[str, Any]:
     wins = [t for t in trades if t.outcome == "WIN"]
     losses = [t for t in trades if t.outcome == "LOSS"]
     ties = [t for t in trades if t.outcome == "TIE"]
 
-    # Recolectar todas las operaciones con imágenes
-    trades_with_img = [
-        t for t in trades
+    losses_with_img = [
+        t for t in losses
         if t.screenshot_url and _is_image_url(t.screenshot_url)
-    ]
-    
-    # Si se prioriza pérdidas, ordenar para que aparezcan primero
-    if prioritize_losses:
-        losses_imgs = [t for t in trades_with_img if t.outcome == "LOSS"]
-        wins_imgs = [t for t in trades_with_img if t.outcome == "WIN"]
-        ties_imgs = [t for t in trades_with_img if t.outcome == "TIE"]
-        # Prioridad: todas las pérdidas primero, luego wins, luego ties
-        trades_with_img = losses_imgs + wins_imgs + ties_imgs
-    
-    # Limitar al máximo especificado
-    trades_with_img = trades_with_img[:max_trades_with_images]
+    ][:max_losses_with_images]
 
     chk_pass = sum(1 for t in trades if t.checklist_pass is True)
     chk_fail = sum(1 for t in trades if t.checklist_pass is False)
@@ -289,12 +260,7 @@ def build_session_payload(
                 "fail": chk_fail,
                 "missing": chk_none,
             },
-            "trades_with_images_used": len(trades_with_img),
-            "trades_with_images_by_outcome": {
-                "losses": len([t for t in trades_with_img if t.outcome == "LOSS"]),
-                "wins": len([t for t in trades_with_img if t.outcome == "WIN"]),
-                "ties": len([t for t in trades_with_img if t.outcome == "TIE"]),
-            },
+            "losses_with_images_used": len(losses_with_img),
         },
         "trades_sample": [
             {
@@ -315,7 +281,7 @@ def build_session_payload(
             }
             for t in trades[-80:]
         ],
-        "trades_with_images": [
+        "losses_with_images": [
             {
                 "id": t.id,
                 "trade_time": _safe_str(t.trade_time),
@@ -332,7 +298,7 @@ def build_session_payload(
                 "screenshot_url": t.screenshot_url,
                 "notes": t.notes,
             }
-            for t in trades_with_img
+            for t in losses_with_img
         ],
     }
 
@@ -350,8 +316,7 @@ def _extract_json(text: str) -> Dict[str, Any]:
 
 def _enforce_hard_rules(review: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(review or {})
-    # Soportar ambos nombres por compatibilidad
-    ltr = out.get("trade_reviews") or out.get("loss_trade_reviews") or []
+    ltr = out.get("loss_trade_reviews") or []
     fixed: List[Dict[str, Any]] = []
 
     for item in ltr:
@@ -375,23 +340,10 @@ def _enforce_hard_rules(review: Dict[str, Any]) -> Dict[str, Any]:
 
         d["ai_is_a_plus"] = bool(ai_validity and score == 5)
 
-        # Clasificación por tipo de trade
-        outcome = str(d.get("outcome", "LOSS")).upper()
-        trade_type = d.get("trade_type")
-        if not trade_type:
-            if outcome == "LOSS":
-                trade_type = "good_loss" if ai_validity else "bad_loss"
-            elif outcome == "WIN":
-                trade_type = "good_win" if ai_validity else "lucky_win"
-            elif outcome == "TIE":
-                trade_type = "neutral_tie"
-            else:
-                trade_type = "unknown"
-        d["trade_type"] = trade_type
-        
-        # Mantener loss_type por compatibilidad
-        if outcome == "LOSS":
-            d["loss_type"] = trade_type
+        loss_type = d.get("loss_type")
+        if not loss_type:
+            loss_type = "good_loss" if ai_validity else "bad_loss"
+        d["loss_type"] = loss_type
 
         if "failed_blocks" not in d or not isinstance(d["failed_blocks"], list):
             fb = []
@@ -402,9 +354,7 @@ def _enforce_hard_rules(review: Dict[str, Any]) -> Dict[str, Any]:
 
         fixed.append(d)
 
-    out["trade_reviews"] = fixed
-    # Mantener loss_trade_reviews por compatibilidad
-    out["loss_trade_reviews"] = [t for t in fixed if t.get("outcome") == "LOSS"]
+    out["loss_trade_reviews"] = fixed
 
     # Anti-contradicción para resumen
     any_invalid = any((it.get("ai_validity") is False) for it in fixed)
@@ -436,15 +386,14 @@ def analyze_session_with_vision(
         {"type": "input_text", "text": payload_text},
     ]
 
-    trades_imgs = session_payload.get("trades_with_images") or session_payload.get("losses_with_images") or []
-    for i, t in enumerate(trades_imgs, start=1):
+    losses_imgs = session_payload.get("losses_with_images") or []
+    for i, t in enumerate(losses_imgs, start=1):
         url = _safe_str(t.get("screenshot_url")).strip()
-        outcome = str(t.get("outcome", "UNKNOWN")).upper()
         if url:
             content.append(
                 {
                     "type": "input_text",
-                    "text": f"Imagen #{i} (outcome={outcome}) trade_id={t.get('id')} (analiza con checklist A+ y reglas duras):",
+                    "text": f"Imagen LOSS #{i} trade_id={t.get('id')} (analiza con checklist A+ y reglas duras):",
                 }
             )
             content.append({"type": "input_image", "image_url": url})

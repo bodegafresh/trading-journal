@@ -205,7 +205,7 @@ with st.container():
     )
 
     if uploaded_evidence is not None:
-        st.image(uploaded_evidence, caption="Preview evidencia", use_column_width=True)
+        st.image(uploaded_evidence, caption="Preview evidencia", width=400)
 
     can_upload = bool(EVIDENCE_STORAGE is not None and uploaded_evidence is not None)
 
@@ -229,7 +229,10 @@ with st.container():
 
                 st.session_state["screenshot_url"] = url
                 st.success("Evidencia subida ✅")
+                st.info(f"URL copiada al formulario. Ahora puedes guardar el trade.")
                 st.code(url, language="text")
+                # Forzar rerun para actualizar el formulario
+                st.rerun()
 
             except Exception as e:
                 st.error(f"No se pudo subir evidencia: {e}")
@@ -240,9 +243,26 @@ with st.container():
             "El campo 'Screenshot/Link evidencia' se llenará automáticamente."
         )
 
-# ---------------------------------------------------------
-# Formulario
-# ---------------------------------------------------------
+# Mostrar URL actual si existe
+if "screenshot_url" in st.session_state and st.session_state["screenshot_url"]:
+    st.success("📎 Evidencia cargada (copia la URL para pegarla en el formulario):")
+
+    col_url, col_btn = st.columns([5, 1])
+    with col_url:
+        st.text_input(
+            "URL de la evidencia",
+            value=st.session_state["screenshot_url"],
+            key="display_screenshot_url",
+            disabled=False,
+            label_visibility="collapsed",
+            help="Copia esta URL (Ctrl+C / Cmd+C) y pégala en el campo 'Screenshot/Link evidencia' del formulario"
+        )
+    with col_btn:
+        if st.button("🗑️ Limpiar", use_container_width=True):
+            del st.session_state["screenshot_url"]
+            st.rerun()
+
+st.divider()
 with st.form("new_trade", clear_on_submit=True):
     c1, c2, c3, c4 = st.columns(4)
 
@@ -274,8 +294,10 @@ with st.form("new_trade", clear_on_submit=True):
     # Campo final que se guarda a la BD
     screenshot_url = st.text_input(
         "Screenshot/Link evidencia",
-        value=st.session_state.get("screenshot_url", ""),
-        key="screenshot_url",
+        value="",
+        key="screenshot_url_input",
+        placeholder="Pega aquí la URL de la evidencia si subiste una imagen arriba ⬆️",
+        help="Si subiste evidencia arriba, copia y pega la URL aquí",
     )
 
     notes = st.text_area("Notas (opcional)", height=90, key="notes")
@@ -310,7 +332,8 @@ if submitted:
                 "market_regime": empty_to_none(market_regime),
                 "quality_grade": empty_to_none(quality_grade),
                 "checklist_pass": bool(checklist_pass),
-                "screenshot_url": empty_to_none(st.session_state.get("screenshot_url", screenshot_url)),
+                # Priorizar el valor del campo input sobre el session_state
+                "screenshot_url": empty_to_none(screenshot_url or st.session_state.get("screenshot_url", "")),
 
                 # ✅ CRÍTICO
                 "session_id": str(open_session_id),
@@ -320,9 +343,18 @@ if submitted:
             inserted = _normalize_insert_result(result)
 
             trade_id = inserted.get("id", "—")
-            st.success(f"Trade guardado ✅ id={trade_id} | PnL={pnl:.2f} USD | session_id={open_session_id}")
+
+            # Limpiar el screenshot_url del session_state para que no se reutilice
+            if "screenshot_url" in st.session_state:
+                del st.session_state["screenshot_url"]
+
             st.cache_data.clear()
 
+            # Mostrar mensaje de éxito
+            st.success(f"Trade guardado ✅ id={trade_id} | PnL={pnl:.2f} USD | session_id={open_session_id}")
+
+            # Forzar rerun para limpiar el formulario completamente
+            st.rerun()
         except requests.HTTPError as e:
             detail = ""
             if e.response is not None:
