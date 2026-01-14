@@ -6,6 +6,7 @@ import os
 import uuid
 
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 
 from trade_journal.app.utils import get_repos, get_recent_trades
@@ -179,91 +180,86 @@ else:
     st.error(session_status)
 
 # ---------------------------------------------------------
-# Evidencia (FUERA del form) => evita que quede "pendiente" hasta submit
+# Sección de Evidencia (FUERA del form para subida automática)
 # ---------------------------------------------------------
 st.markdown("### 🗂️ Evidencia (opcional)")
 
-with st.container():
-    if EVIDENCE_STORAGE is None:
-        st.info(
-            "Subida rápida deshabilitada: configura tu .env con "
-            "GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO, GITHUB_PAGES_BASE."
-        )
-        uploaded_evidence = None
-    else:
-        uploaded_evidence = st.file_uploader(
-            "Subir screenshot (png/jpg/webp)",
-            type=["png", "jpg", "jpeg", "webp"],
-            accept_multiple_files=False,
-            key="evidence_file",
-        )
-
-    overwrite_evidence = st.checkbox(
-        "Reemplazar imagen si ya existe (corregir)",
-        value=False,
-        key="overwrite_evidence",
+uploaded_evidence = None
+if EVIDENCE_STORAGE is not None:
+    uploaded_evidence = st.file_uploader(
+        "Subir screenshot (se sube automáticamente al seleccionar)",
+        type=["png", "jpg", "jpeg", "webp"],
+        accept_multiple_files=False,
+        key="evidence_file_uploader",
+        help="Selecciona una imagen y se subirá automáticamente"
     )
 
+    # SUBIDA AUTOMÁTICA INMEDIATA (fuera del form)
     if uploaded_evidence is not None:
-        st.image(uploaded_evidence, caption="Preview evidencia", width=400)
+        current_file_id = f"{uploaded_evidence.name}_{uploaded_evidence.size}"
+        last_uploaded_id = st.session_state.get("last_uploaded_file_id", "")
 
-    can_upload = bool(EVIDENCE_STORAGE is not None and uploaded_evidence is not None)
-
-    c_up1, c_up2 = st.columns([1, 3])
-    with c_up1:
-        if st.button("⬆️ Subir evidencia", disabled=not can_upload):
+        if current_file_id != last_uploaded_id:
             try:
-                trade_date_local = datetime.now(LOCAL_TZ).date()
+                with st.spinner("Subiendo imagen..."):
+                    trade_date_local = datetime.now(LOCAL_TZ).date()
+                    current_asset = st.session_state.get("asset", ASSETS[0])
 
-                path = EVIDENCE_STORAGE.build_path(
-                    trade_date=trade_date_local,
-                    asset=st.session_state.get("asset", ASSETS[0]),
-                    filename=uploaded_evidence.name,
-                )
+                    path = EVIDENCE_STORAGE.build_path(
+                        trade_date=trade_date_local,
+                        asset=current_asset,
+                        filename=uploaded_evidence.name,
+                    )
 
-                url = EVIDENCE_STORAGE.upload(
-                    path=path,
-                    content=uploaded_evidence.getvalue(),
-                    overwrite=bool(overwrite_evidence),
-                )
+                    url = EVIDENCE_STORAGE.upload(
+                        path=path,
+                        content=uploaded_evidence.getvalue(),
+                        overwrite=True,
+                    )
 
-                st.session_state["screenshot_url"] = url
-                st.success("Evidencia subida ✅")
-                st.info(f"URL copiada al formulario. Ahora puedes guardar el trade.")
-                st.code(url, language="text")
-                # Forzar rerun para actualizar el formulario
-                st.rerun()
+                    st.session_state["screenshot_url"] = url
+                    st.session_state["last_uploaded_file_id"] = current_file_id
+
+                    st.rerun()
 
             except Exception as e:
-                st.error(f"No se pudo subir evidencia: {e}")
+                st.error(f"❌ Error: {e}")
+        else:
+            st.info(f"📎 Ya subida: {uploaded_evidence.name}")
 
-    with c_up2:
-        st.caption(
-            "Tip: sube la evidencia primero y luego guarda el trade. "
-            "El campo 'Screenshot/Link evidencia' se llenará automáticamente."
-        )
+    # Mostrar URL si está disponible
+    if "screenshot_url" in st.session_state and st.session_state["screenshot_url"]:
+        url_to_fill = st.session_state["screenshot_url"]
+        st.success(f"🔗 URL guardada: {url_to_fill}")
 
-# Mostrar URL actual si existe
-if "screenshot_url" in st.session_state and st.session_state["screenshot_url"]:
-    st.success("📎 Evidencia cargada (copia la URL para pegarla en el formulario):")
+        # Auto-llenar el campo del formulario SIEMPRE que haya URL
+        # Ejecutar el JavaScript para llenar el campo
+        auto_fill_js = f"""
+            <script>
+            setTimeout(function() {{
+                const input = window.parent.document.querySelector('input[aria-label="Screenshot/Link evidencia"]');
+                if (input) {{
+                    input.value = "{url_to_fill}";
+                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }}
+            }}, 300);
+            </script>
+        """
+        components.html(auto_fill_js, height=0)
 
-    col_url, col_btn = st.columns([5, 1])
-    with col_url:
-        st.text_input(
-            "URL de la evidencia",
-            value=st.session_state["screenshot_url"],
-            key="display_screenshot_url",
-            disabled=False,
-            label_visibility="collapsed",
-            help="Copia esta URL (Ctrl+C / Cmd+C) y pégala en el campo 'Screenshot/Link evidencia' del formulario"
-        )
-    with col_btn:
-        if st.button("🗑️ Limpiar", use_container_width=True):
-            del st.session_state["screenshot_url"]
-            st.rerun()
+    # Preview de la imagen
+    if uploaded_evidence is not None:
+        with st.expander("👁️ Ver preview", expanded=False):
+            st.image(uploaded_evidence, width=300)
+else:
+    st.info("Subida deshabilitada: configura GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO, GITHUB_PAGES_BASE en .env")
 
-st.divider()
+# ---------------------------------------------------------
+# Formulario
+# ---------------------------------------------------------
 with st.form("new_trade", clear_on_submit=True):
+    st.markdown("### 📊 Datos de la Operación")
     c1, c2, c3, c4 = st.columns(4)
 
     with c1:
@@ -280,7 +276,7 @@ with st.form("new_trade", clear_on_submit=True):
 
     with c4:
         emotion = st.selectbox("Emoción", options=EMOTIONS, index=0, key="emotion")
-        checklist_pass = st.checkbox("Checklist PASS", value=True, key="checklist_pass")  # ✅ columna BD
+        checklist_pass = st.checkbox("Checklist PASS", value=True, key="checklist_pass")
 
     st.markdown("### 🧩 Contexto / Calidad (opcional)")
     s1, s2, s3 = st.columns([1.2, 1.2, 0.8])
@@ -291,13 +287,11 @@ with st.form("new_trade", clear_on_submit=True):
     with s3:
         quality_grade = st.selectbox("Calidad", options=QUALITY_GRADES, index=0, key="quality_grade")
 
-    # Campo final que se guarda a la BD
+    # Campo de screenshot - se llenará automáticamente por JavaScript
     screenshot_url = st.text_input(
         "Screenshot/Link evidencia",
-        value="",
         key="screenshot_url_input",
-        placeholder="Pega aquí la URL de la evidencia si subiste una imagen arriba ⬆️",
-        help="Si subiste evidencia arriba, copia y pega la URL aquí",
+        placeholder="Se completa automáticamente al subir imagen arriba ⬆️ o pega una URL manualmente",
     )
 
     notes = st.text_area("Notas (opcional)", height=90, key="notes")
@@ -344,14 +338,31 @@ if submitted:
 
             trade_id = inserted.get("id", "—")
 
-            # Limpiar el screenshot_url del session_state para que no se reutilice
+            # Limpiar el screenshot_url y flags relacionados del session_state
             if "screenshot_url" in st.session_state:
                 del st.session_state["screenshot_url"]
+            if "last_uploaded_file_id" in st.session_state:
+                del st.session_state["last_uploaded_file_id"]
 
             st.cache_data.clear()
 
             # Mostrar mensaje de éxito
             st.success(f"Trade guardado ✅ id={trade_id} | PnL={pnl:.2f} USD | session_id={open_session_id}")
+
+            # JavaScript para limpiar el campo del formulario antes del rerun
+            clear_field_js = """
+                <script>
+                setTimeout(function() {
+                    const input = window.parent.document.querySelector('input[aria-label="Screenshot/Link evidencia"]');
+                    if (input) {
+                        input.value = "";
+                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                        input.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                }, 100);
+                </script>
+            """
+            components.html(clear_field_js, height=0)
 
             # Forzar rerun para limpiar el formulario completamente
             st.rerun()
