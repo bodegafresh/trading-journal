@@ -8,7 +8,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from trade_journal.data.supabase_client import load_supabase_from_env
-from trade_journal.data.repositories import SessionRepository, TradeRepository
+from trade_journal.data.repositories import AiReviewRepository, SessionRepository, TradeRepository
 
 LOCAL_TZ = pytz.timezone("America/Santiago")
 
@@ -19,6 +19,13 @@ def get_repos() -> Tuple[TradeRepository, SessionRepository]:
     load_dotenv(override=False)
     sb = load_supabase_from_env()
     return TradeRepository(sb), SessionRepository(sb)
+
+
+@st.cache_resource
+def get_review_repo() -> AiReviewRepository:
+    load_dotenv(override=False)
+    sb = load_supabase_from_env()
+    return AiReviewRepository(sb)
 
 
 @st.cache_data(ttl=15)

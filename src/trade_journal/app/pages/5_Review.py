@@ -10,11 +10,12 @@ import pandas as pd
 import pytz
 import streamlit as st
 
-from trade_journal.app.utils import get_repos, get_recent_sessions
+from trade_journal.app.utils import get_repos, get_recent_sessions, get_review_repo
 from trade_journal.ai.openai_review import (
     TradeLite,
     build_session_payload,
     analyze_session_with_vision,
+    normalize_review,
 )
 
 LOCAL_TZ = pytz.timezone("America/Santiago")
@@ -116,6 +117,7 @@ def _score_proxy_from_user_checklist(trades_df: pd.DataFrame) -> pd.Series:
 # Load repos + sessions
 # ----------------------------
 trade_repo, session_repo = get_repos()
+review_repo = get_review_repo()
 df_sessions = get_recent_sessions(limit=500)
 
 if df_sessions.empty:
@@ -209,24 +211,35 @@ with tabs[0]:
     max_imgs = st.slider("Máx operaciones con imagen a auditar", 1, 30, 15)
     prioritize = st.checkbox("Priorizar pérdidas en el análisis", value=True,
                             help="Si está activado, analiza primero las pérdidas, luego ganancias y empates")
+    use_cached = st.checkbox("Usar revisión guardada si existe", value=True)
     run = st.button("🧠 Analizar sesión con IA", type="primary", use_container_width=True)
 
-    cache_key = f"review_ai::{session_id}::{max_imgs}::{prioritize}"
+    cache_key = f"review_ai::{session_id}"
+    cached_db = review_repo.get_session_review(session_id)
+
     if run:
         with st.spinner("Analizando con IA..."):
+            session_meta = dict(session or {})
+            session_meta["scope"] = "session"
             payload = build_session_payload(
-                session_meta=session,
+                session_meta=session_meta,
                 trades=trades,
                 max_trades_with_images=int(max_imgs),
                 prioritize_losses=prioritize,
             )
             review = analyze_session_with_vision(session_payload=payload, max_output_tokens=2500)
+            review_repo.upsert_session_review(session_id, payload, review)
             st.session_state[cache_key] = {"payload": payload, "review": review}
+    elif use_cached and cached_db:
+        st.session_state[cache_key] = {
+            "payload": cached_db.get("payload"),
+            "review": normalize_review(cached_db.get("review") or {}),
+        }
 
     cached = st.session_state.get(cache_key)
 
     if cached:
-        review = cached["review"]
+        review = normalize_review(cached["review"] or {})
 
         # ---- Usage / tokens / meta ----
         meta = review.get("_meta") or {}
